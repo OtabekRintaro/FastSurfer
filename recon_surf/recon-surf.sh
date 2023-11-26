@@ -323,6 +323,8 @@ else DoParallel=0 ; threads_hemi="$threads"
 fi
 
 # set threads for openMP and itk
+pre_OMP_NUM_THREADS=$OMP_NUM_THREADS
+pre_ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS=$ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS
 # if OMP_NUM_THREADS is not set and available resources are too vast, mc will fail with segmentation fault!
 # Therefore we set it to 1 as default above, if nothing is specified.
 export OMP_NUM_THREADS=$threads
