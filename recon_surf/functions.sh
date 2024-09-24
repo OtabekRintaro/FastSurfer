@@ -7,7 +7,7 @@ export binpath
 
 # fs_time command from fs60, fs72 fails in parallel mode, use local one
 # also check for failure (e.g. on mac it fails, so we cannot use it there)
-if FSTIME_LOAD=0 "${binpath}fs_time" echo testing &> /dev/null ; then timecmd="${binpath}fs_time"
+if "${binpath}fs_time" --no-load echo testing &> /dev/null ; then timecmd="${binpath}fs_time"
 else timecmd="" ; echo "INFO: Testing fs_time was not successful, not reporting per-command runtimes."
 fi
 export timecmd
@@ -46,6 +46,36 @@ function check_create_subjects_dir_properties()
       exit 1
     fi
   fi
+}
+
+function time_it()
+{
+  # parameters
+  # $1 : timing file
+  # $. : cmd  (command to run)
+
+  # all lines starting with the timing key
+  #   (@#@FSTIMEIT are filtered and sent to the timing file)
+  # the rest goes to stdout
+  local args=("$@")
+  local TF=${args[0]}
+  local cmda=("${args[@]:1}")
+  if [ -n "$timecmd" ]
+  then
+    timecmd_pos=-1
+    for (( i=0; i<${#cmda[@]}; i++)) ; do if [ "${cmda[i]}" == "$timecmd" ]; then timecmd_pos=$i ; break ; fi ; done
+    if [ "$timecmd_pos" -gt -1 ] ; then
+      if [[ "$FSLOAD" == 1 ]] ; then a="--load" ; else a="--no-load" ; fi
+      cmda=("${cmda[@]:0:$timecmd_pos}" "$a" "${cmda[@]:$timecmd_pos}")
+    fi
+    # timecmd is non-empty here, so time/fs_time does not fail
+    printf -v key "%s\n-> " "${cmda[*]}"
+    "${binpath}fs_time" -k "$key" --no-load -o "$TF" -a "${cmda[@]}"
+  else
+    echo "WARNING: Using time_it, but time seems to fail. Not timing..."
+    "${cmd[@]}"
+  fi
+  if [ "${PIPESTATUS[0]}" -ne 0 ] ; then exit "${PIPESTATUS[0]}" ; fi
 }
 
 function RunIt()
@@ -89,6 +119,7 @@ function run_it_cmdf()
   local CMDF=$2
   shift
   shift
+  local cmd
   cmd="$(echo_quoted "$@" | tee -a "$LF")"
   printf -v tmp %q "$cmd"
   echo "echo $tmp" | tee -a "$CMDF"
@@ -98,19 +129,21 @@ function run_it_cmdf()
 
 function RunBatchJobs()
 {
-# parameters
-# $1 : LF
-# $2 ... : CMDFS
-  local LOG_FILE=$1
+  # parameters
+  # $1 : LF
+  # $2 ... : CMDFS
   # launch jobs found in command files (shift past first logfile arg).
   # job output goes to a logfile named after the command file, which
   # later gets appended to LOG_FILE
+
+  local LOG_FILE=$1
 
   echo
   echo "RunBatchJobs: Logfile: $LOG_FILE"
 
   local PIDS=()
   local LOGS=()
+  local CMDFS=()
   shift
   local JOB
   local LOG
@@ -118,36 +151,43 @@ function RunBatchJobs()
     echo "RunBatchJobs: CMDF: $cmdf"
     chmod u+x "$cmdf"
     JOB="$cmdf"
-    LOG=$cmdf.log
-    echo "" >& "$LOG"
-    echo " $JOB" >> "$LOG"
-    echo "" >> "$LOG"
+    LOG="$cmdf.log"
+    printf "\n %s\n\n" "$JOB" > "$LOG"
     exec "$JOB" >> "$LOG" 2>&1 &
-    PIDS=("${PIDS[@]}" "$!")
-    LOGS=("${LOGS[@]}" "$LOG")
+    PIDS+=("$!")
+    CMDFS+=("$JOB")
+    LOGS+=("$LOG")
+  done
 
-  done
   # wait till all processes have finished
-  local PIDS_STATUS=()
-  for pid in "${PIDS[@]}"; do
-    echo "Waiting for PID $pid of (${PIDS[*]}) to complete..."
-    wait "$pid"
-    PIDS_STATUS=("${PIDS_STATUS[@]}" "$?")
-  done
-  # now append their logs to the main log file
-  for log in "${LOGS[@]}"
+  local unsuccessful=()
+  for i in $(seq "${#PIDS}")
   do
-    tee -a "$LOG_FILE" < "$log"
-    rm -f "$log"
-  done
-  echo "PIDs (${PIDS[*]}) completed and logs appended."
-  # and check for failures
-  for pid_status in "${PIDS_STATUS[@]}"
-  do
-    if [ "$pid_status" != "0" ] ; then
-      exit 1
+    echo "Waiting for PID ${PIDS[i-1]} of (${PIDS[*]}) to complete..."
+    wait "${PIDS[i-1]}"
+    status="$?"
+    # now append their logs to the main log file
+    tee -a "$LOG_FILE" < "${LOGS[i-1]}"
+    rm -f "${LOGS[i-1]}"
+    if [[ "$status" != "0" ]]
+    then
+      unsuccessful+=($((i - 1)))
+      {
+        echo "ERROR: The script ${CMDFS[i-1]} (PID: ${PID[i-1]}) did not complete successfully!"
+        echo "========================================"
+        echo ""
+      } | tee -a "$LOG_FILE"
     fi
   done
+  # and check for failures
+  if [[ "${#unsuccessful}" == 0 ]]
+  then
+    echo "PIDs (${PIDS[*]}) completed successfully! Their logs have been appended." | tee -a "$LOG_FILE"
+  else
+    echo "PIDs (${unsuccessful[*]}) of (${PIDS[*}]}) have NOT completed successfully! All logs appended." | \
+      tee -a "$LOG_LOG_FILE"
+    exit 1
+  fi
 }
 
 function check_allow_root()
