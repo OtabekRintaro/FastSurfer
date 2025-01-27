@@ -407,7 +407,8 @@ class RunModelOnData:
         pred_classes = back_to_native(pred_classes)
         # map to freesurfer label space
         pred_classes = du.map_label2aparc_aseg(pred_classes, self.labels)
-        pred_classes = du.split_cortex_labels(pred_classes)
+        pred_classes, _ = du.split_cortex_labels(pred_classes)
+        # add potential midplane applications here (use second output of split_cortex_labels)
         return pred_classes
 
     def save_img(
