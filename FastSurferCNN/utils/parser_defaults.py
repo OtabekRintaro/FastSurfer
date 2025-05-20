@@ -292,7 +292,8 @@ ALL_FLAGS = {
         help="Choose the primary voxelsize to process, must be either a number between 0 and 1 (below 0.7 is "
              "experimental) or 'min' (default). A number forces processing at that specific voxel size, 'min' "
              "determines the voxel size from the image itself (conforming to the minimum voxel size, or 1 if the "
-             "minimum voxel size is above 0.95mm). ",
+             "minimum voxel size is above 0.95mm). 'any' will try to keep the voxel size unchanged (even anisotropic, "
+             "which is experimental).",
     ),
     "orientation": __arg(
         "--orientation",

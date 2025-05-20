@@ -274,8 +274,9 @@ class RunModelOnData:
 
         try:
             self.vox_size = _vox_size(vox_size)
-        except argparse.ArgumentParser:
-            raise ValueError(f"Invalid value for vox_size, must be between 0 and 1 or 'min', was {vox_size}.") from None
+        except (argparse.ArgumentTypeError, ValueError):
+            condition = "convertible to a float between 0 and 1 or 'min'"
+            raise ValueError(f"Invalid value for vox_size, must be {condition}, was '{vox_size}'.") from None
         self.conform_to_1mm_threshold = conform_to_1mm_threshold
 
     @property
@@ -300,7 +301,7 @@ class RunModelOnData:
             "threshold_1mm": self.conform_to_1mm_threshold,
             "vox_size": self.vox_size,
             "orientation": self.orientation,
-            "img_size": "fov",
+            "img_size": self.image_size,
         }, **kwargs)
 
     def conform_and_save_orig(
@@ -383,10 +384,8 @@ class RunModelOnData:
         }
 
         if not np.allclose(_zoom := np.asarray(zoom), np.mean(zoom), atol=1e-4, rtol=1e-3):
-            LOGGER.warning(
-                f"FastSurfer support for anisotropic images is experimental, we detected the following voxel sizes: "
-                f"{_zoom.tolist()}!"
-            )
+            msg = "FastSurfer support for anisotropic images is experimental, we detected the following voxel sizes"
+            LOGGER.warning(f"{msg}: {np.round(_zoom, decimals=4).tolist()}!")
 
         orig_in_lia, back_to_native = to_target_orientation(orig_data, affine, target_orientation="LIA")
         shape = orig_in_lia.shape + (self.get_num_classes(),)
