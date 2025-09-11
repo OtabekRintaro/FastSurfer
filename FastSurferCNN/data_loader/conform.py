@@ -24,13 +24,13 @@ from typing import TYPE_CHECKING, Literal, TypeVar, Union, cast
 import nibabel
 import nibabel as nib
 import numpy as np
-import numpy.typing as npt
+from numpy import typing as npt
 from nibabel.freesurfer.mghformat import MGHHeader, MGHImage
 
 if TYPE_CHECKING:
     import torch
 
-from FastSurferCNN.utils import AffineMatrix4x4, ScalarType, logging, nibabelImage, nibabelHeader
+from FastSurferCNN.utils import AffineMatrix4x4, ScalarType, logging, nibabelHeader, nibabelImage
 from FastSurferCNN.utils.arg_types import ImageSizeOption, OrientationType, StrictOrientationType, VoxSizeOption
 from FastSurferCNN.utils.arg_types import float_gt_zero_and_le_one as __conform_to_one_mm
 from FastSurferCNN.utils.arg_types import img_size as __img_size
@@ -63,6 +63,8 @@ LOGGER = logging.getLogger(__name__)
 
 _TA = TypeVar("_TA", bound=Union[np.ndarray, "torch.Tensor"])
 _TB = TypeVar("_TB", bound=Union[np.ndarray, "torch.Tensor"])
+
+OrntArrayType = np.ndarray[tuple[int, Literal[2]], np.dtype[ScalarType]]
 
 
 def __rescale_type(a: str) -> float | int | None:
@@ -292,12 +294,34 @@ def to_target_orientation(
         return image_data, do_nothing
 
 
+def ornt_to_ornt(source_ornt: npt.ArrayLike, target_ornt: npt.ArrayLike) -> OrntArrayType:
+    """
+    Determines the ornt array that transforms source_ornt into target_ornt.
+
+    Parameters
+    ----------
+    source_ornt : array_like
+        The source ornt array.
+    target_ornt : array_like
+        The target ornt array.
+
+    Returns
+    -------
+    np.ndarray
+        The ornt array that transforms source_ornt into target_ornt.
+    """
+    return concat_ornts([inv_ornt(source_ornt), target_ornt])
+
+
 def orientation_to_ornts(
-        source_affine: npt.NDArray[float],
+        source_affine: AffineMatrix4x4,
         target_orientation: StrictOrientationType,
-) -> tuple[npt.NDArray[int], npt.NDArray[int]]:
+) -> tuple[OrntArrayType, OrntArrayType]:
     """
     Determine the nibabel `ornt` Array to reorder and flip data from source_affine such that the data is in orientation.
+
+    While this function takes an `StrictOrientationType` as input, ornts only support "soft orientations", i.e. no
+    resampling.
 
     Parameters
     ----------
@@ -313,16 +337,70 @@ def orientation_to_ornts(
     npt.NDArray[int]
         The `ornt` transform back from target_orientation to source_affine.
     """
-    from nibabel.orientations import axcodes2ornt, io_orientation, ornt_transform
+    from nibabel.orientations import axcodes2ornt, io_orientation
 
     source_ornt = io_orientation(source_affine)
     target_ornt = axcodes2ornt(target_orientation.upper())
-    reorient_ornt = ornt_transform(source_ornt, target_ornt)
-    unorient_ornt = ornt_transform(target_ornt, source_ornt)
+    reorient_ornt = ornt_to_ornt(source_ornt, target_ornt)
+    unorient_ornt = ornt_to_ornt(target_ornt, source_ornt)
     return reorient_ornt.astype(int), unorient_ornt.astype(int)
 
 
-def apply_orientation(arr: _TB | npt.ArrayLike, ornt: npt.NDArray[int]) -> _TB:
+def concat_ornts(ornts: Sequence[npt.ArrayLike]) -> OrntArrayType:
+    """
+    Concatenate `ornts` into a single `ornts` array.
+
+    Parameters
+    ----------
+    ornts : sequence of np.ndarray
+        A sequence of `ornts` to be concatenated.
+
+    Returns
+    -------
+    np.ndarray
+        The ornt array resulting from consecutive application of `ornts`.
+    """
+    _ornts = [np.asarray(_ornt, dtype=int) for _ornt in ornts]
+    if any(_ornt.shape[1] != 2 for _ornt in _ornts):
+        raise ValueError("ornt arrays in `ornts` must have 2 columns.")
+    if len(_ornts) == 1:
+        return _ornts[0]
+    if any(_ornts[0].shape != _ornt.shape for _ornt in _ornts[1:]):
+        raise ValueError("ornt arrays in `ornts` must have the same shape.")
+
+    def _join(accumulator: npt.NDArray[int], previous: npt.NDArray[int]) -> npt.NDArray[int]:
+        # flips --> in space of accumulator, multiply in how the flips in previous multiply in...
+        # argsort is the same as new[previous[:, 0]] = previous[:, 1] and multiply by new
+        accumulator[:, 1] *= previous[np.argsort(previous[:, 0]), 1]
+        accumulator[:, 0] = accumulator[previous[:, 0], 0]
+        return accumulator
+
+    return reduce(_join, reversed(_ornts[:-1]), _ornts[-1].astype(int).copy())
+
+
+def inv_ornt(ornt: npt.ArrayLike) -> OrntArrayType:
+    """
+    Invert the ornt array.
+
+    Parameters
+    ----------
+    ornt : array_like
+        The ornt array to invert.
+
+    Returns
+    -------
+    np.ndarray
+        The inverted ornt array.
+    """
+    _ornt = np.asarray(ornt, dtype=int)
+    if _ornt.shape[1] != 2:
+        raise ValueError("`ornt` array must have 2 columns.")
+    result = np.empty_like(_ornt)
+    result[_ornt[:, 0], :] = np.stack([np.arange(_ornt.shape[0], dtype=int), _ornt[:, 1]], axis=-1)
+    return result
+
+
+def apply_orientation(arr: _TB | npt.ArrayLike, ornt: OrntArrayType) -> _TB:
     """
     Apply transformations implied by `ornt` to the first n axes of the array `arr`.
 
@@ -385,7 +463,7 @@ def map_image(
 
     Parameters
     ----------
-    img : nibabelImage
+    img : nibabel.spatialimages.SpatialImage
         The src 3D image with data and affine set.
     out_affine : np.ndarray
         Trg image affine.
@@ -672,7 +750,7 @@ def conform(
         dtype: type | None = np.uint8,
         orientation: OrientationType | None = "lia",
         threshold_1mm: float | None = None,
-        rescale: int | float | Literal["none"] = 255,
+        rescale: int | float | None = 255,
         vox_eps: float = 1e-4,
         rot_eps: float = 1e-6,
         **kwargs,
@@ -684,7 +762,7 @@ def conform(
 
     Parameters
     ----------
-    img : nibabelImage
+    img : nib.spatialimages.SpatialImage
         Loaded source image.
     order : int, default=1
         Interpolation order (0=nearest, 1=linear, 2=quadratic, 3=cubic).
@@ -809,6 +887,56 @@ def conform(
     return new_img
 
 
+def reorient_affine(
+        affine: npt.NDArray[float],
+        ornt: npt.ArrayLike,
+        shape: tuple[int, ...] | None = None,
+) -> npt.NDArray[float]:
+    """
+    Reorient the affine based on the orientation transform `ornt` (this is not the target orientation, but operation).
+
+    Parameters
+    ----------
+    affine : npt.NDArray[float]
+        The affine transformation.
+    ornt : array_like
+        The orientation to transform by.
+    shape : tuple of ints, optional
+        The shape of the (input) data.
+
+    Returns
+    -------
+    npt.NDArray[float]
+        The transformed affine.
+
+    Raises
+    ------
+    ValueError
+        If the affine is not a valid 2d or 3d affine matrix, or if ornt is not a valid ornt-transform.
+    TypeError
+        If affine is a homogeneous affine (i.e. with translation), but shape is not passed.
+    """
+    aff = affine.copy()
+    _ornt = np.asarray(ornt, dtype=int)
+    if affine.shape not in ((4, 4), (3, 3), (2, 2), (2, 3), (3, 4)):
+        raise ValueError("Invalid affine shape, must be 2d or 3d affine.")
+    # read the dim from affine
+    dim = 2 if affine.shape[0] == 2 or np.all(affine[2, :3] == 0) else 3
+    # reorder, then flip
+    aff[:dim, :dim] = (_ornt[:, 1][None] * aff[:dim, _ornt[:, 0]])
+    if _ornt.shape != (dim, 2):
+        raise ValueError(f"shape of ornt must be ({dim}, 2) for {dim}d images")
+    if affine.shape[1] > dim:
+        if shape is None:
+            if np.any(ornt[..., 1] == -1.):
+                raise TypeError("homogeneous affines requires shape to be passed.")
+        else:
+            origin_in_CS = np.expand_dims(0.5 * (np.asarray(shape) - 1), 1)
+            origin_out_CS = np.expand_dims(0.5 * (np.asarray(shape)[_ornt[:, 0]] - 1), 1)
+            aff[:dim, dim] += (affine[:dim, :dim] @ origin_in_CS - aff[:dim, :dim] @ origin_out_CS)[:, 0]
+    return aff
+
+
 def prepare_mgh_header(
         img: nibabelImage,
         target_vox_size: npt.NDArray[float] | None = None,
@@ -824,7 +952,7 @@ def prepare_mgh_header(
 
     Parameters
     ----------
-    img : nibabel.analyze.SpatialImage
+    img : nibabel.spatialimages.SpatialImage
         The image object to base the header on.
     target_vox_size : npt.NDArray[float], None, default=None
         The target voxel size, importantly still in native orientation (reordering after).
@@ -862,8 +990,7 @@ def prepare_mgh_header(
             out_ornt = nib.orientations.axcodes2ornt(orientation[-3:].upper())
             mdc_affine = nib.orientations.inv_ornt_aff(out_ornt, source_img_shape)[:3, :3]
         else: # soft lia, ras, ....
-            aff = _ornt_transform[:, 1][None] * source_mdc
-            mdc_affine = np.stack([aff[:3, int(ax)] for ax in _ornt_transform[:, 0]], axis=-1)
+            mdc_affine = np.linalg.inv(reorient_affine(_ornt_transform, source_img_shape))
 
     shape: list[int] = [(source_img_shape if target_img_size is None else target_img_size)[i] for i in re_order_axes]
     h1.set_data_shape(shape + [1])
@@ -885,7 +1012,8 @@ def prepare_mgh_header(
         true_center = center - 0.5 * np.ones((1, 3)) @ source_affine[:3, :3]
         # new image center from true center go half a voxel in all direction of the new affine
         center = 0.5 * np.ones((1, 3)) @ get_affine_from_any(h1)[:3, :3] + true_center
-    h1["Pxyz_c"] = source_affine.dot(np.hstack((center, [1.0])))[:3]
+    h1["Pxyz_c"] = nib.affines.apply_affine(source_affine, center)
+    # h1["Pxyz_c"] = source_affine.dot(np.hstack((center, [1.0])))[:3]
     # There is a special case here, where an interpolation is triggered, but it is not necessary, if the position of
     # the center could "fix this" condition:
     vox2vox = np.linalg.inv(get_affine_from_any(h1)) @ source_affine
@@ -962,7 +1090,7 @@ def is_conform(
 
     Parameters
     ----------
-    img : nibabelImage
+    img : nib.analyze.SpatialImage
         Loaded source image.
     vox_size : float, "min", None, default=1.0
         Which voxel size to conform to. Can either be a float between 0.0 and 1.0, 'min' (to check, whether the image is
@@ -1158,7 +1286,7 @@ def conformed_vox_img_size(
 
     Parameters
     ----------
-    img : nibabelImage
+    img : nib.spatialimages.SpatialImage
         Loaded source image.
     vox_size : float, "min", None
         The voxel size parameter to use: either a voxel size as float, or the string "min" to automatically find a
