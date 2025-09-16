@@ -1,7 +1,7 @@
-import pytest
-import numpy as np
-from numpy import typing as npt
 import nibabel as nib
+import numpy as np
+import pytest
+from numpy import typing as npt
 
 from FastSurferCNN.utils.arg_types import OrientationType, StrictOrientationType
 

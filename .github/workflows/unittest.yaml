@@ -16,7 +16,7 @@ on:
 permissions:
   actions: read
   attestations: read
-  checks: write
+  checks: read
   contents: read
   deployments: read
   issues: read
@@ -63,7 +63,7 @@ jobs:
         continue-on-error: true  # pytest only exits with code 0, if all tests pass
         run: |
           echo "::group::Run tests"
-          flags=("--junit-xml=/tmp/fastsurfer-unitest-${{ matrix.tests }}.junit.xml")
+          flags=("--junit-xml=/tmp/fastsurfer-unittest-${{ matrix.tests }}.junit.xml")
           if [[ "$ACTION_RUNNER_DEBUG" == "true" ]]
           then 
             flags+=(-vv --log_cli_level=DEBUG)
@@ -82,3 +82,5 @@ jobs:
           check_name: Annotate the test results as checks
           fail_on_failure: 'true'
           fail_on_parse_error: 'true'
+          annotate_only: 'true'  # here, we only add the annotations, the fail-state cannot be set here because the
+                                 # github token cannot have the required permissions in PRs from forks

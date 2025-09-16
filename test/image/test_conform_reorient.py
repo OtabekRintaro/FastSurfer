@@ -5,9 +5,9 @@ import nibabel as nib
 import numpy as np
 import pytest
 from pytest import approx
-from numpy import typing as npt
 
-from FastSurferCNN.data_loader.conform import conform, OrientationType, prepare_mgh_header
+from FastSurferCNN.data_loader.conform import OrientationType, conform, prepare_mgh_header
+from FastSurferCNN.utils import AffineMatrix4x4, Image3d, nibabelHeader
 from FastSurferCNN.utils.arg_types import StrictOrientationType
 
 logger = getLogger(__name__)
@@ -20,38 +20,39 @@ class MultiCoordImages(TypedDict):
 conform_reorient = {"rescale": None, "dtype": np.float32}
 
 
-def circle_data(img_size: int) -> npt.NDArray[np.float32]:
+def circle_data(img_size: int) -> Image3d:
+    """Generates a 3D image with a centered sphere of radius img_size/2."""
     data = np.mgrid[0:img_size, 0:img_size, 0:img_size].astype(np.float32) - (img_size - 1) / 2.0
     return (np.sum(data * data, axis=0) < img_size * img_size / 4.0).astype(np.float32)
 
 
 @pytest.fixture(scope="session")
-def circle_image(random_affine: npt.NDArray[float], img_size: int) -> nib.Nifti1Image:
+def circle_image(random_affine: AffineMatrix4x4, img_size: int) -> nib.Nifti1Image:
     return nib.Nifti1Image(circle_data(img_size), random_affine)
 
 
 @pytest.fixture(scope="session")
-def random_image(random_affine: npt.NDArray[float], img_size: int) -> nib.Nifti1Image:
+def random_image(random_affine: AffineMatrix4x4, img_size: int) -> nib.Nifti1Image:
     return nib.Nifti1Image(np.random.randn(img_size, img_size, img_size), random_affine)
 
 
 @pytest.fixture(scope="session")
-def empty_image(random_affine: npt.NDArray[float], img_size: int) -> nib.Nifti1Image:
+def empty_image(random_affine: AffineMatrix4x4, img_size: int) -> nib.Nifti1Image:
     return nib.Nifti1Image(np.empty((img_size,) * 3), random_affine)
 
 
 @pytest.fixture(scope="session")
-def worldcoord_images(random_affine: npt.NDArray[float], img_size: int) -> MultiCoordImages:
+def worldcoord_images(random_affine: AffineMatrix4x4, img_size: int) -> MultiCoordImages:
     data = worldcoords_data(random_affine, img_size)
     return MultiCoordImages(**{c: nib.Nifti1Image(data[..., i], random_affine) for i, c in enumerate("XYZ")})
 
 
-def worldcoords_data(affine: npt.NDArray[float], img_size: int) -> np.ndarray:
+def worldcoords_data(affine: AffineMatrix4x4, img_size: int) -> np.ndarray:
     xi = np.moveaxis(np.mgrid[0:img_size, 0:img_size, 0:img_size], 0, -1)
     return nib.affines.apply_affine(affine, xi.reshape((-1, 3)).astype(float)).reshape(xi.shape).astype(np.float32)
 
 
-def affine2orientation(affine: npt.NDArray[float]) -> OrientationType:
+def affine2orientation(affine: AffineMatrix4x4) -> OrientationType:
     """Generates the orientation type string from an affine matrix."""
     from nibabel.orientations import aff2axcodes
 
@@ -63,19 +64,19 @@ def affine2orientation(affine: npt.NDArray[float]) -> OrientationType:
 
 
 class HeaderTests:
-    def test_affine_orientation(self, affine: npt.NDArray[float], orientation: OrientationType):
+    def test_affine_orientation(self, affine: AffineMatrix4x4, orientation: OrientationType):
         """Tests whether a conformed image actually has the correct orientation."""
         actual = affine2orientation(affine)
         expected = orientation
         assert actual == expected, "The expected orientation did not match the actual orientation."
 
-    def test_affine_vox_size(self, affine: npt.NDArray[float], vox_size: float):
+    def test_affine_vox_size(self, affine: AffineMatrix4x4, vox_size: float):
         """Tests whether a conformed image actually has the correct voxel size."""
         actual = np.linalg.norm(affine[:3, :3], axis=0)
         expected = vox_size
         assert actual == approx(expected), "The actual voxel sizes in the affine did not match the expected."
 
-    def test_vox_size(self, header: nib.analyze.SpatialHeader, vox_size: float):
+    def test_vox_size(self, header: nibabelHeader, vox_size: float):
         """Tests whether a conformed image actually has the correct voxel size."""
         actual = header.get_zooms()
         expected = np.full_like(actual, vox_size)
@@ -90,7 +91,7 @@ class TestPrepareHeader(HeaderTests):
         return prepare_mgh_header(empty_image, vox_size, img_size, orientation)
 
     @pytest.fixture(scope="class")
-    def affine(self, header: nib.freesurfer.mghformat.MGHHeader) -> npt.NDArray[float]:
+    def affine(self, header: nib.freesurfer.mghformat.MGHHeader) -> AffineMatrix4x4:
         return header.get_affine()
 
 
@@ -101,7 +102,7 @@ class TestConformAffine(HeaderTests):
         return conform(empty_image, orientation=orientation, vox_size=vox_size, **conform_reorient)
 
     @pytest.fixture(scope="class")
-    def affine(self, image: nib.Nifti1Image) -> npt.NDArray[float]:
+    def affine(self, image: nib.Nifti1Image) -> AffineMatrix4x4:
         return image.affine
 
     @pytest.fixture(scope="class")
@@ -132,7 +133,9 @@ class TestThereAndBack:
         """
 
         # this has to be filtered by the region of the image that is the same
-        mask = np.pad(circle_data(circle_image.shape[0] - 2), 1, constant_values=0) + (1- circle_data(circle_image.shape[0] + 2)[1:-1, 1:-1, 1:-1])
+        inner_circle = circle_data(circle_image.shape[0] - 2)
+        outer_circle = circle_data(circle_image.shape[0] + 2)[1:-1, 1:-1, 1:-1]
+        mask = np.pad(inner_circle, 1, constant_values=0) + (1 - outer_circle)
         expected = np.where(mask, circle_image.dataobj, np.nan)
         back_data = np.asarray(image.dataobj)
         assert back_data == approx(expected, abs=1e-3), "The data differs from the re-oriented image!"
@@ -152,8 +155,9 @@ def test_reorient_worldcoords(worldcoord_images: MultiCoordImages, soft_orientat
     -------
 
     """
-    from FastSurferCNN.data_loader.conform import conform
     from pytest import approx
+
+    from FastSurferCNN.data_loader.conform import conform
 
     ximg, yimg, zimg = {k: conform(img, **conform_reorient) for k, img in worldcoord_images.items()}
     xyz = np.stack([ximg, yimg, zimg], axis=-1)

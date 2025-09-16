@@ -14,11 +14,11 @@
 # limitations under the License.
 
 # IMPORTS
-import nibabel as nib
 import numpy as np
+from nibabel import aff2axcodes
 from numpy import typing as npt
 
-from FastSurferCNN.data_loader.conform import getscale, scalecrop
+from FastSurferCNN.data_loader.conform import conform, getscale, scalecrop
 from HypVINN.config.hypvinn_global_var import (
     FS_CLASS_NAMES,
     HYPVINN_CLASS_NAMES,
@@ -29,39 +29,6 @@ from HypVINN.config.hypvinn_global_var import (
 ##
 # Helper Functions
 ##
-
-
-def calculate_flip_orientation(iornt: np.ndarray, base_ornt: np.ndarray) -> np.ndarray:
-    """
-    Compute the flip orientation transform.
-
-    ornt[N, 1] is flip of axis N, where 1 means no flip and -1 means flip.
-
-    Parameters
-    ----------
-    iornt : np.ndarray
-        Initial orientation.
-    base_ornt : np.ndarray
-        Base orientation.
-
-    Returns
-    -------
-    new_iornt : np.ndarray
-        New orientation.
-    """
-    new_iornt = iornt.copy()
-
-    # Find the axis to compared and then compared orientation, where 1 means no flip
-    # and -1 means flip.
-    for axno, direction in np.asarray(base_ornt):
-        idx = np.where(iornt[:, 0] == axno)
-        idirection = iornt[int(idx[0][0]), 1]
-        if direction == idirection:
-            new_iornt[int(idx[0][0]), 1] = 1.0
-        else:
-            new_iornt[int(idx[0][0]), 1] = -1.0
-
-    return new_iornt
 
 
 def reorient_img(img, ref_img):
@@ -80,19 +47,11 @@ def reorient_img(img, ref_img):
     img : nibabel.Nifti1Image
         Reoriented image.
     """
-    ref_ornt = nib.io_orientation(ref_img.affine)
-    iornt = nib.io_orientation(img.affine)
-
-    if not np.array_equal(iornt, ref_ornt):
-        # first flip orientation
-        fornt = calculate_flip_orientation(iornt, ref_ornt)
-        img = img.as_reoriented(fornt)
-        # the transpose axis
-        tornt = np.ones_like(ref_ornt)
-        tornt[:, 0] = ref_ornt[:, 0]
-        img = img.as_reoriented(tornt)
-
-    return img
+    # if the affines are the same, no reorientation is required and we can skip this
+    if np.array_equal(ref_img.affine, img.affine):
+        return img
+    target_orientation = "soft " + aff2axcodes(ref_img.affine, ("LR", "PA", "IS"))
+    return conform(img, orientation=target_orientation, vox_size=None, img_size=None, dtype=None, rescale=None)
 
 
 def transform_axial2coronal(vol: np.ndarray, axial2coronal: bool = True) -> np.ndarray:

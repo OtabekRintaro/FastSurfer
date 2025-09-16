@@ -39,7 +39,7 @@ from numpy import typing as npt
 
 import FastSurferCNN.reduce_to_aseg as rta
 from FastSurferCNN.data_loader import data_utils as du
-from FastSurferCNN.data_loader.conform import conform, is_conform, orientation_to_ornts, to_target_orientation
+from FastSurferCNN.data_loader.conform import affine_for_target_orientation, conform, is_conform, to_target_orientation
 from FastSurferCNN.inference import Inference
 from FastSurferCNN.quick_qc import check_volume
 from FastSurferCNN.utils import PLANES, Plane, logging, nibabelImage, parser_defaults
@@ -388,7 +388,7 @@ class RunModelOnData:
 
         orig_in_lia, back_to_native = to_target_orientation(orig_data, affine, target_orientation="LIA")
         shape = orig_in_lia.shape + (self.get_num_classes(),)
-        _ornt_transform, _ = orientation_to_ornts(affine, target_orientation="LIA")
+        _ornt_transform, _ = affine_for_target_orientation(affine, target_orientation="LIA")
         _zoom = _zoom[_ornt_transform[:, 0]]
 
         pred_prob = torch.zeros(shape, **kwargs)
