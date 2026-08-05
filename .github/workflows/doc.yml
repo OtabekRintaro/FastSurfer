@@ -26,6 +26,9 @@ jobs:
         uses: astral-sh/setup-uv@v7
         with:
           python-version: '3.12'
+      - name: debug
+        run: |
+          uv pip list
       - name: Build doc
         env:
           PYTHONPATH: ${{ env.PYTHONPATH != '' && format( '{1}:src', env.PYTHONPATH ) || 'src' }}
